@@ -5,7 +5,7 @@ from pathlib import Path
 
 from arignan.cli import main
 from arignan.ingestion.parsers import DocumentParser, PdfOcrRequired
-from arignan.models import ParsedDocument, SourceDocument, SourceType
+from arignan.models import LoadEvent, ParsedDocument, SourceDocument, SourceType
 
 
 class FakeLocalGenerator:
@@ -159,6 +159,42 @@ def test_cli_load_ask_and_delete_smoke(tmp_path: Path, capsys, monkeypatch) -> N
     log_output = capsys.readouterr().out
     assert "\tdelete\t" in log_output
     assert load_id in log_output
+
+
+def test_cli_folder_load_records_child_loads_and_deletes_one_document(tmp_path: Path, capsys, monkeypatch) -> None:
+    _patch_local_generator(monkeypatch)
+    app_home = tmp_path / ".arignan"
+    folder = tmp_path / "papers"
+    folder.mkdir()
+    alpha = folder / "alpha.md"
+    beta = folder / "beta.md"
+    alpha.write_text("# Alpha Paper\n\nAlpha-specific retrieval notes.\n", encoding="utf-8")
+    beta.write_text("# Beta Paper\n\nBeta-specific retrieval notes.\n", encoding="utf-8")
+
+    assert main(["--app-home", str(app_home), "load", str(folder), "--hat", "default"]) == 0
+    load_output = capsys.readouterr().out
+    batch_load_id = load_output.split("load_id ", maxsplit=1)[1].split(".", maxsplit=1)[0]
+    events = [
+        LoadEvent.from_dict(json.loads(line))
+        for line in (app_home / "ingestion_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    ingest_events = [event for event in events if event.operation.value == "ingest"]
+    parent = next(event for event in ingest_events if event.load_id == batch_load_id)
+    children = [event for event in ingest_events if event.metadata.get("record_type") == "document"]
+    beta_child = next(event for event in children if event.source_items == [str(beta.resolve())])
+
+    assert parent.metadata["record_type"] == "batch"
+    assert parent.metadata["child_load_ids"] == [child.load_id for child in children]
+    assert [child.load_id for child in children] == [f"{batch_load_id}-001", f"{batch_load_id}-002"]
+    assert all(len(child.source_items) == 1 for child in children)
+
+    assert main(["--app-home", str(app_home), "delete", beta_child.load_id]) == 0
+    delete_output = capsys.readouterr().out
+
+    assert f"Deleted loads: {beta_child.load_id}." in delete_output
+    assert (app_home / "hats" / "default" / "summaries" / "alpha-paper").exists()
+    assert not (app_home / "hats" / "default" / "summaries" / "beta-paper").exists()
 
 
 def test_cli_session_save_load_and_reset_smoke(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -324,6 +360,16 @@ def test_cli_load_continues_after_pdf_failure_and_lists_failed_files(tmp_path: P
     assert '"source_uri"' in log_text
     assert "z-bad.pdf" in log_text
     assert "ocr fallback failed for scanned PDF" in log_text
+    events = [
+        LoadEvent.from_dict(json.loads(line))
+        for line in (app_home / "ingestion_log.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    ingest_events = [event for event in events if event.operation.value == "ingest"]
+    batch_event = next(event for event in ingest_events if event.metadata.get("record_type") == "batch")
+    child_events = [event for event in ingest_events if event.metadata.get("record_type") == "document"]
+    assert batch_event.metadata["child_load_ids"] == [child_events[0].load_id]
+    assert child_events[0].source_items == [str(good_markdown.resolve())]
 
 
 def test_cli_load_defers_ocr_heavy_pdf_until_after_other_files(tmp_path: Path, capsys, monkeypatch) -> None:

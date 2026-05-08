@@ -21,7 +21,7 @@ from arignan.grouping import (
     estimate_markdown_length,
 )
 from arignan.indexing import Chunker, DenseIndexer, LexicalIndex, LexicalIndexer, LocalDenseIndex, create_embedder, tokenize
-from arignan.ingestion import IngestionFailure, IngestionLog, IngestionService
+from arignan.ingestion import IngestionBatch, IngestionFailure, IngestionLog, IngestionService
 from arignan.llm import LocalTextGenerator, create_local_text_generator
 from arignan.markdown import MarkdownRepository, derive_keywords
 from arignan.markdown.writer import HeuristicArtifactWriter, LLMArtifactWriter
@@ -36,6 +36,7 @@ from arignan.tracing import ModelCallTrace, ModelTraceCollector
 
 @dataclass(slots=True)
 class LoadDocumentTrace:
+    load_id: str
     source_uri: str
     title: str
     topic_folder: str
@@ -299,6 +300,7 @@ class ArignanApp:
                 topic_folders.append(artifact.topic_folder)
             traces.append(
                 LoadDocumentTrace(
+                    load_id=document.load_id,
                     source_uri=document.source.source_uri,
                     title=document.source.title or Path(document.source.source_uri).name,
                     topic_folder=artifact.topic_folder,
@@ -328,17 +330,11 @@ class ArignanApp:
 
         if batch.documents:
             self._emit_progress("Recording ingestion log...")
-            self.ingestion_log.append(
-                LoadEvent(
-                    load_id=batch.load_id,
-                    operation=LoadOperation.INGEST,
-                    hat=target_hat,
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                    source_items=batch.source_items,
-                    artifact_paths=artifact_paths,
-                    topic_folders=topic_folders,
-                    metadata={"input_ref": batch.input_ref},
-                )
+            self._record_ingestion_events(
+                batch=batch,
+                hat=target_hat,
+                artifact_paths=artifact_paths,
+                topic_folders=topic_folders,
             )
         self._emit_progress(f"""load_id = {batch.load_id}, hat = {target_hat}, 
                     document_count = {len(batch.documents)}, topic_folders = {topic_folders}, 
@@ -708,6 +704,107 @@ class ArignanApp:
     def list_loads(self) -> list[LoadEvent]:
         return self.list_events()
 
+    def _record_ingestion_events(
+        self,
+        *,
+        batch: IngestionBatch,
+        hat: str,
+        artifact_paths: list[Path],
+        topic_folders: list[str],
+    ) -> None:
+        created_at = datetime.now(timezone.utc).isoformat()
+        documents_by_load_id = {document.load_id: document for document in batch.documents}
+        child_load_ids = sorted(documents_by_load_id)
+        multi_document_batch = len(child_load_ids) > 1 or any(
+            int(document.source.metadata.get("batch_source_count") or 1) > 1
+            for document in batch.documents
+        )
+        if multi_document_batch:
+            self.ingestion_log.append(
+                LoadEvent(
+                    load_id=batch.load_id,
+                    operation=LoadOperation.INGEST,
+                    hat=hat,
+                    created_at=created_at,
+                    source_items=batch.source_items,
+                    artifact_paths=artifact_paths,
+                    topic_folders=topic_folders,
+                    metadata={
+                        "record_type": "batch",
+                        "input_ref": batch.input_ref,
+                        "child_load_ids": child_load_ids,
+                    },
+                )
+            )
+        document_artifacts = self._document_artifact_index(hat)
+        for document_load_id in child_load_ids:
+            document = documents_by_load_id[document_load_id]
+            per_document_artifacts = document_artifacts.get(document_load_id, [])
+            document_topic_folders = list(dict.fromkeys(topic for topic, _ in per_document_artifacts))
+            document_paths = [
+                path
+                for _, paths in per_document_artifacts
+                for path in paths
+            ]
+            self.ingestion_log.append(
+                LoadEvent(
+                    load_id=document_load_id,
+                    operation=LoadOperation.INGEST,
+                    hat=hat,
+                    created_at=created_at,
+                    source_items=[document.source.source_uri],
+                    artifact_paths=document_paths,
+                    topic_folders=document_topic_folders,
+                    metadata={
+                        "record_type": "document",
+                        "input_ref": batch.input_ref,
+                        "batch_load_id": batch.load_id,
+                        "source_title": document.source.title,
+                    },
+                )
+            )
+
+    def _document_artifact_index(self, hat: str) -> dict[str, list[tuple[str, list[Path]]]]:
+        indexed: dict[str, list[tuple[str, list[Path]]]] = {}
+        for manifest_path in sorted(self.layout.hat(hat).summaries_dir.glob("*/.topic_manifest.json")):
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            topic_folder = str(payload.get("topic_folder") or manifest_path.parent.name)
+            markdown_paths = [Path(path) for path in payload.get("markdown_paths", [])]
+            for item in payload.get("documents", []):
+                document = ParsedDocument.from_dict(item)
+                indexed.setdefault(document.load_id, []).append((topic_folder, markdown_paths))
+        return indexed
+
+    @staticmethod
+    def _document_belongs_to_load(document: ParsedDocument, load_id: str) -> bool:
+        return document.load_id == load_id or document.source.metadata.get("batch_load_id") == load_id
+
+    @staticmethod
+    def _event_child_load_ids(event: LoadEvent) -> list[str]:
+        child_load_ids = event.metadata.get("child_load_ids")
+        if not isinstance(child_load_ids, list):
+            return []
+        return [str(load_id) for load_id in child_load_ids if str(load_id).strip()]
+
+    def _expand_delete_load_ids(
+        self,
+        load_ids: list[str],
+        ingest_events: dict[str, LoadEvent],
+    ) -> tuple[list[str], list[str]]:
+        missing: list[str] = []
+        expanded: list[str] = []
+        for load_id in load_ids:
+            event = ingest_events.get(load_id)
+            if event is None:
+                missing.append(load_id)
+                continue
+            child_ids = [child_id for child_id in self._event_child_load_ids(event) if child_id in ingest_events]
+            if child_ids:
+                expanded.extend(child_ids)
+            else:
+                expanded.append(load_id)
+        return list(dict.fromkeys(expanded)), missing
+
     def delete(self, load_ids: list[str]) -> DeleteResult:
         self._emit_progress(f"Deleting {len(load_ids)} load(s)...")
         all_events = self.ingestion_log.read_all()
@@ -717,8 +814,7 @@ class ArignanApp:
             if event.operation is LoadOperation.INGEST
         }
         deleted_topics: list[str] = []
-        missing = [load_id for load_id in load_ids if load_id not in ingest_events]
-        to_delete = [load_id for load_id in load_ids if load_id in ingest_events]
+        to_delete, missing = self._expand_delete_load_ids(load_ids, ingest_events)
 
         affected_hats = {ingest_events[load_id].hat for load_id in to_delete}
         for hat in affected_hats:
@@ -936,7 +1032,7 @@ class ArignanApp:
                     summary_excerpt=summary_excerpt,
                     source_count=len(documents),
                     estimated_length=estimated_length,
-                    current_load=any(document.load_id == load_id for document in documents),
+                    current_load=any(self._document_belongs_to_load(document, load_id) for document in documents),
                 )
             )
         return topics
@@ -1085,7 +1181,7 @@ class ArignanApp:
                 f"(confidence {recommendation.confidence:.2f})..."
             )
             for document in merged_documents:
-                if document.load_id != load_id:
+                if not self._document_belongs_to_load(document, load_id):
                     continue
                 trace = trace_by_source.get(document.source.source_uri)
                 if trace is None:
@@ -1128,7 +1224,7 @@ class ArignanApp:
         for manifest_path in sorted(self.layout.hat(hat).summaries_dir.glob("*/.topic_manifest.json")):
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             documents = [ParsedDocument.from_dict(item) for item in payload.get("documents", [])]
-            selected = [document for document in documents if document.load_id == load_id]
+            selected = [document for document in documents if self._document_belongs_to_load(document, load_id)]
             if not selected:
                 continue
             topic_folder = payload["topic_folder"]
@@ -1164,7 +1260,7 @@ class ArignanApp:
             topic_folder = payload["topic_folder"]
             documents = [ParsedDocument.from_dict(item) for item in payload.get("documents", [])]
             for document in documents:
-                if document.load_id != load_id:
+                if not self._document_belongs_to_load(document, load_id):
                     continue
                 document_chunks = self._assign_topic_folder(self.chunker.chunk_document(document), topic_folder)
                 chunks.extend(document_chunks)
@@ -1176,7 +1272,7 @@ class ArignanApp:
         for manifest_path in sorted(self.layout.hat(hat).summaries_dir.glob("*/.topic_manifest.json")):
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             documents = [ParsedDocument.from_dict(item) for item in payload.get("documents", [])]
-            if not any(document.load_id == load_id for document in documents):
+            if not any(self._document_belongs_to_load(document, load_id) for document in documents):
                 continue
             decision_value = str(payload.get("decision") or GroupingDecision.STANDALONE.value)
             try:
@@ -1310,10 +1406,26 @@ class ArignanApp:
         hat_layout = self.layout.hat(event.hat)
         if not hat_layout.root.exists():
             return False
+        child_load_ids = self._event_child_load_ids(event)
+        if child_load_ids:
+            return any(
+                self._load_id_exists_in_hat(event.hat, child_load_id)
+                for child_load_id in child_load_ids
+            )
+        if event.metadata.get("record_type") == "document":
+            return self._load_id_exists_in_hat(event.hat, event.load_id)
         if not event.topic_folders:
             return True
         for topic_folder in event.topic_folders:
             if (hat_layout.summaries_dir / topic_folder / ".topic_manifest.json").exists():
+                return True
+        return False
+
+    def _load_id_exists_in_hat(self, hat: str, load_id: str) -> bool:
+        for manifest_path in sorted(self.layout.hat(hat).summaries_dir.glob("*/.topic_manifest.json")):
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            documents = [ParsedDocument.from_dict(item) for item in payload.get("documents", [])]
+            if any(document.load_id == load_id for document in documents):
                 return True
         return False
 
@@ -1830,7 +1942,7 @@ def _no_context_llm_failure_message() -> str:
     )
 
 
-GROUPING_REVIEW_MIN_CONFIDENCE = 0.68
+GROUPING_REVIEW_MIN_CONFIDENCE = 0.55
 
 
 GROUPING_REVIEW_RESPONSE_FORMAT = {

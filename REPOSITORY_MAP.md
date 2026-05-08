@@ -28,6 +28,7 @@ Important current reality:
 - swallowed LLM failures now write full tracebacks to a session-local `exceptions.log`
 - Ollama streams that emit only thinking and no final answer text are now treated as explicit runtime failures, and the generator clears its ready-state so later turns can re-check runtime health
 - markdown-generation and RAG-answer prompts now live in `<app_home>/prompts.json` and can be edited without reinstalling
+- default prompt templates now keep system prompts static and put dynamic user-turn context at the end of user prompts for better Ollama prompt-cache reuse
 - ask-route classification prompts also live in `<app_home>/prompts.json`, and default/light asks classify `retrieve` vs `chat_context` before running RAG
 - ask-route classification now supports `ask_route_backend = "llm" | "embedding"` in `settings.json`
 - the GUI ask composer now exposes both rerank-candidate count and final answer-context count as independent per-question overrides
@@ -58,6 +59,7 @@ Read these first:
   - now includes a short `prompts.json` editing note covering retrieval placeholders vs. chat-history placeholders
 - `src/arignan/application.py`: main orchestration layer
   - now owns the ask-route classifier, shared session-context prompt blocks, single-main-LLM reuse for ask flows, the split between conversational system instructions vs. real chat-turn messages, honest no-context/local-LLM-failure fallback wording, and the raised default answer-generation token cap
+  - multi-source loads now record per-document ingestion events, and delete expands parent batch IDs to their child load IDs
 - `src/arignan/cli.py`: CLI surface and user-visible flow
 - `src/arignan/config.py`: defaults and settings behavior
 - `src/arignan/setup_flow.py`: user bootstrap flow
@@ -165,6 +167,8 @@ Implemented MCP surface:
   - owns prompt defaults, `prompts.json` creation/loading, and placeholder rendering for user-edited prompt templates
   - now includes dedicated prompt slots for retrieval-grounded answers, conversational follow-up answers, and no-context warning answers
   - conversational/classifier prompt defaults are now instruction-only and no longer inline session-summary placeholders by default
+  - default answer prompts order stable session context before retrieved context and place the current question last
+  - default topic-summary prompts are example-driven and ask for concrete wiki-style specifics rather than generic abstracts
   - now recreates a missing `prompts.json` automatically from defaults at runtime so prompt editing remains recoverable after accidental deletion
 
 ### Storage and Schemas
@@ -185,6 +189,8 @@ Implemented MCP surface:
   - append/read support for `ingestion_log.jsonl`
 - `src/arignan/ingestion/service.py`
   - ingestion batch orchestration and `load_id` creation
+  - folder/mass uploads now assign each source a child load ID while retaining parent batch metadata
+  - partial-success folder loads still preserve a parent batch event so the visible parent `load_id` remains meaningful
 
 ### Indexing
 
@@ -216,6 +222,7 @@ Implemented MCP surface:
   - decides standalone vs merge vs segment
   - deterministic length/segmentation guardrail around the grouping policy
   - the topic folder chosen here now remains the active topic folder; there is no second-stage canonical renaming pass
+  - merge scoring is intentionally less timid so moderate but concrete retrieval evidence can group related papers into one wiki page
 - `src/arignan/markdown/rendering.py`
   - shared deterministic rendering helpers
   - shared keyword extraction / text cleanup / markdown table helpers
@@ -235,6 +242,7 @@ Implemented MCP surface:
   - local-LLM-backed artifact generation
   - topic, hat-map, and global-map prompt text now comes from the loaded prompt set under app-home instead of hard-coded module constants
   - topic-summary prompting now treats `summary.md` as the main article page of a compiled wiki, with grouped-topic coherence and `## Related Threads` for retrieval-oriented lookup
+  - prompt defaults now emphasize concrete mechanisms, named entities, and lookup paths instead of generic summaries
   - progress reporting for LLM calls
   - session-local traceback logging for swallowed LLM failures
 - `src/arignan/llm/runtime.py`

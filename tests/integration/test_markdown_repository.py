@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-from arignan.grouping import GroupingDecision, GroupingPlan
+from arignan.grouping import GroupingDecision, GroupingPlan, SegmentPlan
 from arignan.markdown import MarkdownRepository, derive_keywords
 from arignan.models import DocumentSection, ParsedDocument, SourceDocument, SourceType
 from arignan.storage import StorageLayout
@@ -210,6 +211,57 @@ def test_markdown_repository_grouped_topic_summary_reads_like_lookup_page(app_ho
     assert "## Related Threads" in summary_text
     assert "one shared page" in summary_text
     assert "Useful entry points" in summary_text or "Useful entry points inside the topic include" in summary_text
+
+
+def test_markdown_repository_writes_large_textbook_as_chapter_segments(app_home: Path) -> None:
+    layout = StorageLayout.from_home(app_home).ensure()
+    textbook_path = app_home / "textbook.md"
+    document = _document(
+        textbook_path,
+        load_id="load-textbook",
+        title="Representation Learning Textbook",
+        text="Chapter one content.\n\nChapter two content.",
+        heading="Representation Learning Textbook",
+    )
+    document.sections = [
+        DocumentSection(text="Chapter one covers latent prediction.", heading="Chapter 1: Latent Prediction"),
+        DocumentSection(text="Chapter two covers retrieval-oriented representations.", heading="Chapter 2: Retrieval"),
+    ]
+    plan = GroupingPlan(
+        decision=GroupingDecision.SEGMENT,
+        topic_folder="representation-learning-textbook",
+        estimated_length=1200,
+        segments=[
+            SegmentPlan(
+                slug="chapter-1-latent-prediction",
+                title="Chapter 1: Latent Prediction",
+                section_indices=[0],
+                estimated_length=600,
+            ),
+            SegmentPlan(
+                slug="chapter-2-retrieval",
+                title="Chapter 2: Retrieval",
+                section_indices=[1],
+                estimated_length=600,
+            ),
+        ],
+    )
+
+    artifact = MarkdownRepository().write_topic(layout, hat="default", documents=[document], plan=plan)
+
+    topic_dir = layout.hat("default").summaries_dir / "representation-learning-textbook"
+    segment_names = [path.name for path in artifact.markdown_paths]
+    index_text = (topic_dir / "topic_index.md").read_text(encoding="utf-8")
+    manifest = json.loads((topic_dir / ".topic_manifest.json").read_text(encoding="utf-8"))
+
+    assert segment_names == ["01-chapter-1-latent-prediction.md", "02-chapter-2-retrieval.md"]
+    assert not (topic_dir / "summary.md").exists()
+    assert "## Segment Guide" in index_text
+    assert "[[01-chapter-1-latent-prediction]]: Chapter 1: Latent Prediction" in index_text
+    assert [segment["title"] for segment in manifest["segments"]] == [
+        "Chapter 1: Latent Prediction",
+        "Chapter 2: Retrieval",
+    ]
 
 
 def test_markdown_repository_writes_topic_graph_and_related_topic_links(app_home: Path) -> None:

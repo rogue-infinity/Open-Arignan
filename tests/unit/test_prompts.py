@@ -50,6 +50,22 @@ def test_conversational_prompt_defaults_do_not_inline_session_history() -> None:
     assert "{session_summary_block}" not in DEFAULT_PROMPT_SET.no_context_answer_user_template
 
 
+def test_answer_prompt_keeps_stable_context_before_dynamic_question() -> None:
+    template = DEFAULT_PROMPT_SET.answer_user_template
+
+    assert template.index("{session_summary_block}") < template.index("{retrieved_passages_block}")
+    assert template.index("{retrieved_passages_block}") < template.index("User asked: {question}")
+
+
+def test_topic_prompt_requires_specific_wiki_style_article() -> None:
+    template = DEFAULT_PROMPT_SET.topic_user_template
+
+    assert "write specifics rather than generic summaries" in DEFAULT_PROMPT_SET.topic_system_prompt
+    assert "## Related Threads" in template
+    assert "Generic phrases" in template
+    assert "{document_context_block}" in template
+
+
 def test_render_prompt_template_raises_for_unknown_placeholder() -> None:
     with pytest.raises(RuntimeError) as exc_info:
         render_prompt_template("answer_user_template", "Question: {question}\nExtra: {missing}", question="What is JEPA?")

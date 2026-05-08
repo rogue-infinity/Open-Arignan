@@ -56,7 +56,7 @@ class GroupingPlan:
 
 
 class GroupingPlanner:
-    def __init__(self, max_md_length: int = 4000, min_merge_score: float = 0.55) -> None:
+    def __init__(self, max_md_length: int = 4000, min_merge_score: float = 0.38) -> None:
         self.max_md_length = max_md_length
         self.min_merge_score = min_merge_score
 

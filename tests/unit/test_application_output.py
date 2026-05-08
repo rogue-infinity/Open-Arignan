@@ -409,8 +409,9 @@ def test_generate_answer_uses_local_llm_when_available() -> None:
 
     assert answer == "JEPA stands for Joint Embedding Predictive Architecture."
     assert len(generator.calls) == 1
-    assert "<question_brief>" in generator.calls[0][1]
-    assert "<retrieved_passages>" in generator.calls[0][1]
+    assert "<question>" in generator.calls[0][1]
+    assert "User asked: What is JEPA?" in generator.calls[0][1]
+    assert "<retrieved_context>" in generator.calls[0][1]
     assert "<example>" in generator.calls[0][1]
     assert calls[-1].task == "answer generation"
     assert calls[-1].status == "ok"
@@ -594,7 +595,7 @@ def test_application_skips_retrieval_for_conversational_followup(app_home: Path,
     assert result.answer == "You're right. Let me answer it directly instead of echoing the prompt."
     assert result.citations == []
     assert result.debug.fused_hits == []
-    assert "classify the next chat turn" in generator.calls[0][0].lower()
+    assert "classify one private knowledge-base chat turn" in generator.calls[0][0].lower()
     assert generator.calls[0][2] is not None
     assert generator.calls[0][1] == "No but answer properly, don't just repeat my prompt"
     assert generator.calls[0][3][-1]["role"] == "assistant"

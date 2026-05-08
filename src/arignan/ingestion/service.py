@@ -61,13 +61,14 @@ class IngestionService:
         source_items: list[str] = []
         deferred_ocr_sources: list[tuple[int, SourceDocument]] = []
         for index, source in enumerate(sources, start=1):
+            document_load_id = _document_load_id(resolved_load_id, index, len(sources))
             label = source.local_path.name if source.local_path is not None else source.source_uri
             if on_progress is not None:
                 on_progress(f"[{index}/{len(sources)}] Parsing '{label}'...")
             try:
                 parsed = self.parser.parse(
                     source,
-                    load_id=resolved_load_id,
+                    load_id=document_load_id,
                     hat=hat,
                     allow_ocr=False,
                 )
@@ -83,6 +84,12 @@ class IngestionService:
                 if on_parse_error is not None:
                     on_parse_error(source, exc)
                 continue
+            _mark_batch_membership(
+                parsed,
+                batch_load_id=resolved_load_id,
+                source_index=index,
+                source_count=len(sources),
+            )
             documents.append(parsed)
             source_items.append(source.source_uri)
         if deferred_ocr_sources and on_progress is not None:
@@ -97,7 +104,7 @@ class IngestionService:
             try:
                 parsed = self.parser.parse(
                     source,
-                    load_id=resolved_load_id,
+                    load_id=_document_load_id(resolved_load_id, source_index, len(sources)),
                     hat=hat,
                     allow_ocr=True,
                 )
@@ -106,6 +113,12 @@ class IngestionService:
                 if on_parse_error is not None:
                     on_parse_error(source, exc)
                 continue
+            _mark_batch_membership(
+                parsed,
+                batch_load_id=resolved_load_id,
+                source_index=source_index,
+                source_count=len(sources),
+            )
             documents.append(parsed)
             source_items.append(source.source_uri)
         batch = IngestionBatch(
@@ -130,3 +143,21 @@ class IngestionService:
                 )
             )
         return batch
+
+
+def _document_load_id(batch_load_id: str, source_index: int, source_count: int) -> str:
+    if source_count <= 1:
+        return batch_load_id
+    return f"{batch_load_id}-{source_index:03d}"
+
+
+def _mark_batch_membership(
+    document: ParsedDocument,
+    *,
+    batch_load_id: str,
+    source_index: int,
+    source_count: int,
+) -> None:
+    document.source.metadata["batch_load_id"] = batch_load_id
+    document.source.metadata["batch_source_index"] = source_index
+    document.source.metadata["batch_source_count"] = source_count

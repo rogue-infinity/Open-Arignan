@@ -117,10 +117,11 @@ def test_llm_artifact_writer_uses_json_response_for_topic_render(tmp_path: Path)
     assert "## Sources" in rendered.summary_markdown
     assert generator.response_formats[0] is not None
     assert generator.response_formats[0]["type"] == "object"
-    assert "Example of a good summary_markdown shape:" in generator.calls[0][1]
-    assert "rich lookup article" in generator.calls[0][1]
-    assert "one coherent topic page" in generator.calls[0][1]
-    assert "topic index file" in generator.calls[0][1]
+    assert "Example:" in generator.calls[0][1]
+    assert "Generic phrases" in generator.calls[0][1]
+    assert "main wiki article" in generator.calls[0][1]
+    assert "## Related Threads" in generator.calls[0][1]
+    assert "directory-listing prose" in generator.calls[0][1]
 
 
 def test_llm_artifact_writer_falls_back_on_invalid_json(tmp_path: Path) -> None:

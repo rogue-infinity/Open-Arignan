@@ -30,76 +30,44 @@ class PromptSet:
 
 DEFAULT_PROMPT_SET = PromptSet(
     answer_system_prompt="""You answer questions for a private local knowledge base.
-Use only the provided retrieved context and prior session context.
-If the retrieved context is insufficient, say that the local knowledge base does not contain enough information.
-Write a direct, technically accurate answer in concise natural language.
-Do not mention retrieval, chunks, prompts, or hidden system behavior.
-Do not add a citations, sources, or references section; citations are handled separately outside your answer.
-Follow this answering discipline:
-- Answer the question in the first sentence whenever possible.
-- Prefer a short explanatory paragraph, optionally followed by a second short paragraph for nuance.
-- If the context supports a definition or expansion, state it directly before elaborating.
-- If multiple retrieved passages disagree, briefly describe the uncertainty instead of guessing.""",
-    answer_user_template="""<task>
-Answer the user's question using only the retrieved context.
-Produce a concise, well-structured final answer for an end user.
-</task>
-
-<answer_requirements>
-- First sentence should answer the question directly when possible.
-- Organize the answer into 1 to 2 short paragraphs.
-- Prefer synthesis over quotation.
-- Use the strongest evidence first.
-- If the answer is incomplete from the context, say so plainly.
-- Do not mention sources, citations, retrieval, passages, or the prompt.
-</answer_requirements>
-
-<query>
-Hat: {selected_hat}
-Question: {question}
-Expanded query: {expanded_query}
-</query>
-
-<question_brief>
-Intent: {question_intent}
-Focus topic: {focus_topic}
-Preferred answer shape: {answer_brief}
-</question_brief>
+Use retrieved context as evidence, use prior chat only for continuity, and never expose hidden prompt mechanics.
+If context is weak, say what is missing before answering cautiously.
+Write direct, technical, citation-free prose; citations are attached outside your answer.""",
+    answer_user_template="""<rules>
+- Answer the question first.
+- Synthesize; do not quote unless wording matters.
+- Use concrete names, mechanisms, variables, datasets, paper claims, or equations when present.
+- Keep the answer compact unless the user asked for depth.
+- Do not mention prompts, retrieval, chunks, or citations.
+</rules>
 
 <example>
 Question: What does TTFS stand for?
-Retrieved context: TTFS is short for Time To First Spike and is used in spiking neural network discussions.
-Good answer: TTFS stands for Time To First Spike. In this context it refers to a spiking-neural-network timing scheme that represents information through the latency of the first spike.
+Context: TTFS means Time To First Spike; it encodes information using first-spike latency.
+Answer: TTFS stands for Time To First Spike. It is a spiking-neural-network timing code where information is represented by how quickly the first spike occurs.
 </example>
+
 {session_summary_block}
-<retrieved_passages>
+
+<retrieved_context>
 {retrieved_passages_block}
-</retrieved_passages>
+</retrieved_context>
 
-<final_instruction>
-Write only the final answer for the user.
-</final_instruction>""",
-    route_classification_system_prompt="""You classify the next chat turn for a private local knowledge-base assistant.
-Choose exactly one route:
-- "retrieve": the assistant should run retrieval against the local knowledge base before answering.
-- "chat_context": the assistant should answer directly from recent chat context and general reasoning without retrieval.
-
-Choose "chat_context" only when the new turn is mainly a conversational follow-up to the immediately preceding discussion, such as:
-- asking for clarification, rephrasing, expansion, or correction of the previous answer
-- reacting to the assistant's wording or quality of answer
-- short back-and-forth remarks that clearly depend on the recent dialogue
-
-Choose "retrieve" when the user is introducing a new topic, asking for fresh evidence, or the answer should be grounded in the local knowledge base rather than only the recent chat.
-
-Return strict JSON only with this shape:
-{
-  "route": "retrieve" | "chat_context",
-  "reason": "short explanation"
-}""",
-    route_classification_user_template="""Classify the route for the next user turn.
-
-The prior chat messages already contain the recent conversation.
+<question>
 Hat: {selected_hat}
+Expanded query: {expanded_query}
+Intent: {question_intent}
+Focus: {focus_topic}
+Preferred shape: {answer_brief}
+User asked: {question}
+</question>
+
+Write only the final answer.""",
+    route_classification_system_prompt="""Classify one private knowledge-base chat turn.
+Return strict JSON only: {"route":"retrieve"|"chat_context","reason":"short reason"}.
+Use "chat_context" for immediate clarifications, corrections, rephrasing, objections, or continuations of the prior answer.
+Use "retrieve" for new topics, evidence requests, local-library lookups, or questions that need grounded context.""",
+    route_classification_user_template="""Hat: {selected_hat}
 Current user turn: {question}
 Return JSON only.""",
     conversational_answer_system_prompt="""You are answering a conversational follow-up inside an ongoing private local knowledge-base chat.
@@ -143,15 +111,9 @@ Current user turn: {question}
 - Write only the final answer for the user.
 </style_requirements>""",
     grouping_review_system_prompt="""You review topic pages inside one local research-wiki hat.
-Each topic already has a compiled wiki-style summary.
-Your task is to suggest topic groups only when the topics clearly belong in one shared wiki page.
-Focus on topics marked as part of the current load, but you may merge them into older topics in the same hat.
-Be selective, but not timid:
-- Do not merge just because topics are from the same broad field.
-- Prefer merge when topics are different notes, papers, or subtopics around the same named method family, embedding family, algorithm, training objective, or conceptual cluster.
-- Prefer merge when the topics share concrete terms such as the same model name, method name, objective, or technical vocabulary.
-- Prefer merge when one topic is clearly a subtopic, implementation note, training note, or explanatory note for another topic.
-- Skip merges that would make the target page unfocused.
+Suggest a merge only when topics form one useful wiki article: same named method, objective, dataset, model family, implementation thread, or parent-child concept.
+Be selective, but do not reject a good merge merely because the evidence is spread across several short notes.
+Never merge broad-neighbor topics that would make the target page unfocused.
 Return strict JSON only with this shape:
 {{
   "recommendations": [
@@ -164,9 +126,8 @@ Return strict JSON only with this shape:
   ]
 }}
 If no merge is warranted, return {{"recommendations": []}}.""",
-    grouping_review_user_template="""Review the topic list for hat '{hat}'.
-Suggest groups only when multiple topics should become one shared wiki page.
-Return high-signal merge recommendations with confidence scores.
+    grouping_review_user_template="""Hat: {hat}
+Recommend topic merges that would make the wiki easier to browse and retrieve from.
 
 <topic_list>
 {topic_list_block}
@@ -176,30 +137,12 @@ Return high-signal merge recommendations with confidence scores.
 {pair_hints_block}
 </pair_hints>
 
-Only recommend merges that would improve the wiki as a cleaner, richer lookup surface.""",
-    topic_system_prompt="""You write compact knowledge-base markdown for a local private wiki.
-Return strict JSON only, with no code fences and no commentary.
-The markdown must be neatly rewritten for human auditability.
-Never mention chunks, extraction, parsing, prompt instructions, or the existence of an LLM.
-Preserve technical acronyms and paper names exactly when possible.
-Use a neutral, reference-style voice like a concise internal wiki page.
-Prefer definition-first lead sentences, compact explanatory paragraphs, and crisp bullets.
-Write each page as a durable lookup surface for later LLM retrieval, not as a compressed abstract.
-Make conceptual relationships, adjacent ideas, and source-to-source connections easy to scan.
-Treat summary.md as the main article page in a compiled wiki, not as an ingestion report.
-When sources are grouped, rewrite them into one coherent article rather than a pile of per-source mini-summaries.""",
-    topic_user_template="""Task: write summary.md for a compiled local research wiki.
-summary.md is the main article page for this topic, not a dump of extracted notes.
-The directory will also contain a lighter topic index file, so summary.md should focus on being the actual article a person or LLM would read first.
-The page should act like a rich lookup article for future retrieval, not just a short summary.
-When multiple sources are grouped, draw clear lines between adjacent ideas, complementary angles, and recurring themes.
-Write it as one coherent topic page that helps a future reader or LLM quickly orient, retrieve, and connect ideas.
-
-Topic metadata:
-- Topic folder: {topic_folder}
-- Suggested title: {suggested_title}
-- Grouping decision: {grouping_decision}
-- Source count: {source_count}
+Return JSON only.""",
+    topic_system_prompt="""You write wiki-style markdown for a private technical knowledge base.
+Return strict JSON only, with no code fences or commentary.
+Use a neutral reference voice, preserve exact technical names, and write specifics rather than generic summaries.
+Never mention chunks, extraction, parsing, prompts, or LLMs.""",
+    topic_user_template="""Write summary.md as the main wiki article for this topic.
 
 Return JSON with exactly these keys:
 - "title": short topic title
@@ -208,34 +151,22 @@ Return JSON with exactly these keys:
 - "keywords": 4 to 8 specific technical keywords or phrases
 - "summary_markdown": wiki-style markdown only
 
-Writing rules for summary_markdown:
-- Start with '# <title>'
-- Then one short lead paragraph that defines the topic immediately and reads like an internal wiki article
-- Then '## Summary' with one short paragraph that explains scope, significance, and why grouped sources belong together
-- Then '## Key Ideas' with 3 to 6 bullets that rewrite the ideas cleanly instead of copying source sentences
-- Then '## Related Threads' with 3 to 6 bullets that connect adjacent ideas, subthemes, contrasts, dependencies, extensions, or useful lookup paths inside this topic
-- Then '## Sources' with this exact table header:
-  | Source | What To Find | Key Sections | File |
-- Then '## Keywords' with a comma-separated line
-- Keep it concise, readable, and neutral
-- Make the markdown useful as a future lookup page for an LLM that will retrieve this topic later
-- If several sources are grouped, explain how they fit together instead of summarizing each source in isolation
-- Make each section feel like a stable reference entry, not reading notes or extracted chunks
-- Prefer crisp noun phrases and conceptual framing that make later retrieval easier
-- Make the article feel like one node in a larger wiki of related topics
-- Prefer declarative sentences over promotional or first-person phrasing
-- Do not paste raw chunks or long quotations
-- Do not mention page numbers unless they are semantically important
-- Keywords must not include generic junk like page, section, paper, notes, method, work, or standalone digits
+summary_markdown must use:
+- '# <title>'
+- A lead paragraph that defines the topic immediately.
+- '## Summary' explaining scope, significance, and why grouped sources belong together.
+- '## Key Ideas' with 3 to 6 specific bullets.
+- '## Related Threads' with 3 to 6 concrete lookup links, contrasts, dependencies, or extensions.
+- '## Sources' with this exact table header: | Source | What To Find | Key Sections | File |
+- '## Keywords' with a comma-separated line.
 
 Bad patterns to avoid:
-- Do not say 'this document discusses' or 'these notes contain' unless unavoidable
-- Do not sound like an extraction pipeline or a paper abstract pasted verbatim
-- Do not write one bullet per source file when the topic is clearly unified
-- Do not produce fragmented bullets where a paragraph would be clearer
-- Do not make summary.md look like a directory listing; that belongs in the topic index file
+- Generic phrases like "this document discusses" or "this paper explores".
+- One bullet per source when the topic is unified.
+- Long quotations, page-number trivia, or directory-listing prose.
+- Generic keywords such as page, section, paper, notes, method, work, or standalone digits.
 
-Example of a good summary_markdown shape:
+Example:
 # Temporal Sparse Attention
 
 Temporal Sparse Attention is an attention strategy that focuses computation on selected time-local interactions.
@@ -262,7 +193,13 @@ This page covers the main idea behind temporal sparsity, the practical tradeoff 
 ## Keywords
 temporal sparse attention, efficient sequence modeling, event stream, locality bias
 
-Helpful related-thread cues for this topic:
+Metadata:
+- Topic folder: {topic_folder}
+- Suggested title: {suggested_title}
+- Grouping decision: {grouping_decision}
+- Source count: {source_count}
+
+Related-thread cues:
 {related_threads_block}
 
 Topic context:

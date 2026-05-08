@@ -56,6 +56,9 @@ def test_ingestion_service_ingests_folder_of_supported_files(
     batch = service.ingest(folder, hat="research", load_id="load-folder")
 
     assert {document.source.source_type.value for document in batch.documents} == {"markdown", "pdf"}
+    assert [document.load_id for document in batch.documents] == ["load-folder-001", "load-folder-002"]
+    assert {document.source.metadata["batch_load_id"] for document in batch.documents} == {"load-folder"}
+    assert {document.source.metadata["batch_source_count"] for document in batch.documents} == {2}
     assert len(batch.source_items) == 2
 
 
