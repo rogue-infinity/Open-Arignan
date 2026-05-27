@@ -53,6 +53,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Override local_llm_model in settings.json before model downloads begin.",
     )
+    parser.add_argument(
+        "--skip-models",
+        action="store_true",
+        help="Skip model downloads (step 3). Used for CI smoke-tests.",
+    )
     return parser
 
 
@@ -113,6 +118,7 @@ def main() -> int:
             app_home=args.app_home,
             llm_backend=args.llm_backend,
             llm_model=args.llm_model,
+            skip_models=args.skip_models,
             progress=print,
             choose_app_home_action=_choose_app_home_action,
         )

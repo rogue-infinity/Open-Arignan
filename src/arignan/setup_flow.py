@@ -432,6 +432,7 @@ def run_setup(
     llm_backend: str | None = None,
     llm_model: str | None = None,
     lightweight: bool = False,
+    skip_models: bool = False,
     progress: Callable[[str], None] | None = None,
     choose_app_home_action: Callable[[AppHomeInspection], str] | None = None,
 ) -> SetupResult:
@@ -468,7 +469,12 @@ def run_setup(
         refresh_existing=app_home_action == "fresh" or app_home_action in {"new", "empty"},
     )
     _emit(progress, "[3/4] Downloading required models...")
-    models_dir = download_required_models(resolved_home, progress=progress)
+    if skip_models:
+        _emit(progress, "[3/4] Skipping model downloads (--skip-models flag set).")
+        models_dir = resolved_home / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        models_dir = download_required_models(resolved_home, progress=progress)
     _emit(progress, "[4/4] Creating CLI launchers...")
     pinned_app_home = resolved_home if app_home is not None else None
     bin_dir, windows_launcher, posix_launcher = create_launchers(root=root, app_home=pinned_app_home)

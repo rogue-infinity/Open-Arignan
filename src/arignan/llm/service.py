@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import time
@@ -13,6 +14,10 @@ from urllib.parse import urlparse
 import httpx
 
 WINDOWS_OLLAMA_AMD64_ZIP_URL = "https://ollama.com/download/ollama-windows-amd64.zip"
+WINDOWS_OLLAMA_ARM64_ZIP_URL = "https://ollama.com/download/ollama-windows-arm64.zip"
+MACOS_OLLAMA_URL = "https://ollama.com/download/ollama-darwin"
+LINUX_OLLAMA_AMD64_URL = "https://ollama.com/download/ollama-linux-amd64"
+LINUX_OLLAMA_ARM64_URL = "https://ollama.com/download/ollama-linux-arm64"
 
 
 def _is_windows_platform() -> bool:
@@ -62,13 +67,8 @@ def provision_managed_runtime(
     executable = bundled_ollama_executable(app_home)
     if executable.exists():
         return executable
-    if _is_windows_platform():
-        _emit(progress, "Installing local model runtime...")
-        return _install_windows_runtime(app_home)
-    raise RuntimeError(
-        "Automatic local model runtime provisioning is only bundled for Windows right now. "
-        "Re-run setup on Windows or install Ollama manually on this platform."
-    )
+    _emit(progress, "Installing local model runtime...")
+    return _install_bundled_runtime(app_home)
 
 
 def ensure_service_running(
@@ -264,18 +264,43 @@ def is_service_ready(endpoint: str, timeout_seconds: float = 1.0) -> bool:
     return True
 
 
-def _install_windows_runtime(app_home: Path) -> Path:
+def _install_bundled_runtime(app_home: Path) -> Path:
     runtime_dir = managed_runtime_dir(app_home)
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = runtime_dir / "ollama-windows-amd64.zip"
-    with httpx.stream("GET", WINDOWS_OLLAMA_AMD64_ZIP_URL, timeout=120.0, follow_redirects=True) as response:
-        response.raise_for_status()
-        with archive_path.open("wb") as handle:
-            for chunk in response.iter_bytes():
-                handle.write(chunk)
-    with zipfile.ZipFile(archive_path) as archive:
-        archive.extractall(runtime_dir)
-    archive_path.unlink(missing_ok=True)
+    system_name = platform.system()
+    machine = platform.machine().lower()
+    is_arm = machine in ("arm64", "aarch64")
+
+    if system_name == "Windows":
+        url = WINDOWS_OLLAMA_ARM64_ZIP_URL if is_arm else WINDOWS_OLLAMA_AMD64_ZIP_URL
+        archive_name = url.rsplit("/", 1)[-1]
+        archive_path = runtime_dir / archive_name
+        with httpx.stream("GET", url, timeout=120.0, follow_redirects=True) as response:
+            response.raise_for_status()
+            with archive_path.open("wb") as handle:
+                for chunk in response.iter_bytes():
+                    handle.write(chunk)
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(runtime_dir)
+        archive_path.unlink(missing_ok=True)
+    elif system_name in ("Darwin", "Linux"):
+        if system_name == "Darwin":
+            url = MACOS_OLLAMA_URL
+        else:
+            url = LINUX_OLLAMA_ARM64_URL if is_arm else LINUX_OLLAMA_AMD64_URL
+        executable = bundled_ollama_executable(app_home)
+        with httpx.stream("GET", url, timeout=120.0, follow_redirects=True) as response:
+            response.raise_for_status()
+            with executable.open("wb") as handle:
+                for chunk in response.iter_bytes():
+                    handle.write(chunk)
+        executable.chmod(executable.stat().st_mode | 0o111)
+    else:
+        raise RuntimeError(
+            f"Automatic local model runtime bundling is not supported on {system_name}. "
+            "Install Ollama manually from https://ollama.com/download and rerun setup."
+        )
+
     executable = bundled_ollama_executable(app_home)
     if not executable.exists():
         raise RuntimeError(f"Managed local model runtime install did not produce {executable.name}.")

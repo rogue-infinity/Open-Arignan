@@ -39,6 +39,7 @@ function App() {
   const [toolbarOpen, setToolbarOpen] = useState(false);
   const [isLoadingTask, setIsLoadingTask] = useState(false);
   const [isDeletingTask, setIsDeletingTask] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const messagesRef = useRef(null);
   const shouldFollowMessagesRef = useRef(true);
   const fileInputRef = useRef(null);
@@ -411,9 +412,9 @@ function appendMessage(message) {
             <button
               type="button"
               className="ghost-button header-tool-button"
-              onClick={() => openFileTarget("settings")}
+              onClick={() => setSettingsOpen(true)}
             >
-              Open Settings
+              Settings
             </button>
             <button
               type="button"
@@ -567,6 +568,10 @@ function appendMessage(message) {
           onDeleteHat={deleteHat}
           busy={isDeletingTask}
         />
+      )}
+
+      {settingsOpen && (
+        <SettingsDialog onClose={() => setSettingsOpen(false)} />
       )}
     </div>
   );
@@ -827,6 +832,236 @@ function ManageDialog({ hats, loads, onClose, onDeleteLoad, onDeleteHat, busy })
         <div className="modal-actions">
           <button type="button" className="modal-action" onClick={onClose} disabled={busy}>
             Close
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SettingsDialog({ onClose }) {
+  const [form, setForm] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  useEffect(() => {
+    fetchJson("/api/settings")
+      .then((data) => setForm(flattenSettings(data)))
+      .catch((err) => setToast({ type: "error", message: normalizeError(err) }));
+  }, []);
+
+  function flattenSettings(data) {
+    const r = data.retrieval || {};
+    const c = data.chunking || {};
+    const s = data.session || {};
+    return {
+      local_llm_backend: data.local_llm_backend || "ollama",
+      local_llm_model: data.local_llm_model || "",
+      local_llm_light_model: data.local_llm_light_model || "",
+      local_llm_endpoint: data.local_llm_endpoint || "http://127.0.0.1:11434",
+      local_llm_keep_alive: data.local_llm_keep_alive || "30m",
+      local_llm_timeout_seconds: String(data.local_llm_timeout_seconds ?? 300),
+      local_llm_context_window: String(data.local_llm_context_window ?? 6144),
+      local_llm_flash_attention: data.local_llm_flash_attention !== false,
+      local_llm_kv_cache_type: data.local_llm_kv_cache_type || "q8_0",
+      dense_top_k: String(r.dense_top_k ?? 10),
+      lexical_top_k: String(r.lexical_top_k ?? 10),
+      rerank_top_k: String(r.rerank_top_k ?? 8),
+      chunk_size: String(c.chunk_size ?? 5600),
+      chunk_overlap: String(c.chunk_overlap ?? 80),
+      idle_timeout_minutes: String(s.idle_timeout_minutes ?? 30),
+      soft_token_limit: String(s.soft_token_limit ?? 18000),
+    };
+  }
+
+  function unflattenSettings(flat) {
+    return {
+      local_llm_backend: flat.local_llm_backend,
+      local_llm_model: flat.local_llm_model,
+      local_llm_light_model: flat.local_llm_light_model,
+      local_llm_endpoint: flat.local_llm_endpoint,
+      local_llm_keep_alive: flat.local_llm_keep_alive,
+      local_llm_timeout_seconds: parseInt(flat.local_llm_timeout_seconds, 10),
+      local_llm_context_window: parseInt(flat.local_llm_context_window, 10),
+      local_llm_flash_attention: flat.local_llm_flash_attention,
+      local_llm_kv_cache_type: flat.local_llm_kv_cache_type,
+      retrieval: {
+        dense_top_k: parseInt(flat.dense_top_k, 10),
+        lexical_top_k: parseInt(flat.lexical_top_k, 10),
+        rerank_top_k: parseInt(flat.rerank_top_k, 10),
+      },
+      chunking: {
+        chunk_size: parseInt(flat.chunk_size, 10),
+        chunk_overlap: parseInt(flat.chunk_overlap, 10),
+      },
+      session: {
+        idle_timeout_minutes: parseInt(flat.idle_timeout_minutes, 10),
+        soft_token_limit: parseInt(flat.soft_token_limit, 10),
+      },
+    };
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setToast(null);
+    try {
+      await fetchJson("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(unflattenSettings(form)),
+      });
+      setToast({ type: "success", message: "Settings saved." });
+    } catch (err) {
+      setToast({ type: "error", message: normalizeError(err) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function setField(key, value) {
+    setForm((f) => ({ ...f, [key]: value }));
+  }
+
+  if (!form) {
+    return (
+      <div className="modal-scrim" role="dialog" aria-modal="true">
+        <section className="modal-card settings-modal">
+          <div className="modal-head"><h2>Settings</h2></div>
+          <div style={{ padding: "20px", color: "var(--muted)" }}>Loading settings...</div>
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="modal-scrim" role="dialog" aria-modal="true">
+      <section className="modal-card settings-modal">
+        <div className="modal-head">
+          <h2>Settings</h2>
+          <p>Configure Arignan's local model and retrieval options. Changes take effect after saving.</p>
+        </div>
+
+        <div className="settings-body">
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">Model</h3>
+            <p className="settings-section-warn">Changing model or backend requires restarting Arignan to take effect.</p>
+            <div className="modal-grid settings-grid">
+              <label className="control-label">
+                LLM Backend
+                <select className="select-control" value={form.local_llm_backend} onChange={(e) => setField("local_llm_backend", e.target.value)}>
+                  <option value="ollama">ollama</option>
+                  <option value="transformers">transformers</option>
+                  <option value="huggingface">huggingface</option>
+                </select>
+              </label>
+              <label className="control-label">
+                LLM Model
+                <input className="text-control" type="text" value={form.local_llm_model} onChange={(e) => setField("local_llm_model", e.target.value)} />
+              </label>
+              <label className="control-label">
+                Light LLM Model
+                <input className="text-control" type="text" value={form.local_llm_light_model} onChange={(e) => setField("local_llm_light_model", e.target.value)} />
+              </label>
+              <label className="control-label">
+                Ollama Endpoint
+                <input className="text-control" type="text" value={form.local_llm_endpoint} onChange={(e) => setField("local_llm_endpoint", e.target.value)} />
+              </label>
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">Performance</h3>
+            <div className="modal-grid settings-grid">
+              <label className="control-label compact-control">
+                Context Window
+                <input className="text-control" type="number" min="512" step="1" value={form.local_llm_context_window} onChange={(e) => setField("local_llm_context_window", e.target.value)} />
+              </label>
+              <label className="control-label compact-control">
+                Timeout (s)
+                <input className="text-control" type="number" min="1" step="1" value={form.local_llm_timeout_seconds} onChange={(e) => setField("local_llm_timeout_seconds", e.target.value)} />
+              </label>
+              <label className="control-label compact-control">
+                KV Cache Type
+                <input className="text-control" type="text" value={form.local_llm_kv_cache_type} onChange={(e) => setField("local_llm_kv_cache_type", e.target.value)} />
+              </label>
+              <label className="control-label compact-control">
+                Keep Alive
+                <input className="text-control" type="text" value={form.local_llm_keep_alive} onChange={(e) => setField("local_llm_keep_alive", e.target.value)} />
+              </label>
+              <div className="control-label">
+                Flash Attention
+                <button
+                  type="button"
+                  className={`toggle-control${form.local_llm_flash_attention ? " is-active" : ""}`}
+                  aria-pressed={form.local_llm_flash_attention}
+                  onClick={() => setField("local_llm_flash_attention", !form.local_llm_flash_attention)}
+                >
+                  <span className="toggle-pill" aria-hidden="true"><span className="toggle-thumb" /></span>
+                  <span>{form.local_llm_flash_attention ? "Enabled" : "Disabled"}</span>
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">Retrieval</h3>
+            <div className="modal-grid settings-grid">
+              <label className="control-label compact-control">
+                Dense Top-K
+                <input className="text-control" type="number" min="1" step="1" value={form.dense_top_k} onChange={(e) => setField("dense_top_k", e.target.value)} />
+              </label>
+              <label className="control-label compact-control">
+                Lexical Top-K
+                <input className="text-control" type="number" min="1" step="1" value={form.lexical_top_k} onChange={(e) => setField("lexical_top_k", e.target.value)} />
+              </label>
+              <label className="control-label compact-control">
+                Rerank Top-K
+                <input className="text-control" type="number" min="1" step="1" value={form.rerank_top_k} onChange={(e) => setField("rerank_top_k", e.target.value)} />
+              </label>
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">Chunking</h3>
+            <div className="modal-grid settings-grid">
+              <label className="control-label compact-control">
+                Chunk Size
+                <input className="text-control" type="number" min="1" step="1" value={form.chunk_size} onChange={(e) => setField("chunk_size", e.target.value)} />
+              </label>
+              <label className="control-label compact-control">
+                Chunk Overlap
+                <input className="text-control" type="number" min="1" step="1" value={form.chunk_overlap} onChange={(e) => setField("chunk_overlap", e.target.value)} />
+              </label>
+            </div>
+          </section>
+
+          <section className="settings-section">
+            <h3 className="settings-section-title">Session</h3>
+            <div className="modal-grid settings-grid">
+              <label className="control-label compact-control">
+                Idle Timeout (min)
+                <input className="text-control" type="number" min="1" step="1" value={form.idle_timeout_minutes} onChange={(e) => setField("idle_timeout_minutes", e.target.value)} />
+              </label>
+              <label className="control-label compact-control">
+                Soft Token Limit
+                <input className="text-control" type="number" min="1" step="1" value={form.soft_token_limit} onChange={(e) => setField("soft_token_limit", e.target.value)} />
+              </label>
+            </div>
+          </section>
+
+        </div>
+
+        {toast && (
+          <div className={`settings-toast settings-toast-${toast.type}`}>{toast.message}</div>
+        )}
+
+        <div className="modal-actions">
+          <button type="button" className="modal-action" onClick={onClose} disabled={saving}>
+            Close
+          </button>
+          <button type="button" className="modal-action primary" onClick={handleSave} disabled={saving || !form}>
+            {saving ? "Saving..." : "Save"}
           </button>
         </div>
       </section>

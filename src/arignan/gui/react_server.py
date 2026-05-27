@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from arignan.application import ArignanApp
-from arignan.config import load_config, write_default_settings
+from arignan.config import load_config, save_config, write_default_settings
 from arignan.models import LoadOperation
 from arignan.prompts import write_default_prompts
 
@@ -212,6 +212,17 @@ def create_gui_app(app: ArignanApp) -> FastAPI:
             "default_answer_context_top_k": app.config.retrieval.answer_context_top_k_default,
             "default_show_thinking": True,
         }
+
+    @gui_app.get("/api/settings")
+    async def get_settings() -> dict[str, object]:
+        cfg = load_config(app_home=app.config.app_home)
+        return cfg.to_dict()
+
+    @gui_app.post("/api/settings")
+    async def update_settings(updates: dict) -> dict[str, object]:
+        _validate_settings_update(updates)
+        cfg = save_config(updates, app_home=app.config.app_home)
+        return cfg.to_dict()
 
     @gui_app.get("/api/library")
     async def library() -> dict[str, object]:
@@ -808,6 +819,40 @@ def _open_browser_later(url: str) -> None:
 
     thread = threading.Thread(target=_worker, daemon=True)
     thread.start()
+
+
+def _validate_settings_update(updates: dict) -> None:
+    from urllib.parse import urlparse as _urlparse
+    backend = updates.get("local_llm_backend")
+    if backend is not None and backend not in {"ollama", "transformers", "huggingface"}:
+        raise HTTPException(status_code=422, detail="local_llm_backend must be ollama, transformers, or huggingface.")
+    endpoint = updates.get("local_llm_endpoint")
+    if endpoint is not None:
+        parsed = _urlparse(str(endpoint))
+        if not (parsed.scheme and parsed.netloc):
+            raise HTTPException(status_code=422, detail="local_llm_endpoint must be a valid URL (e.g. http://127.0.0.1:11434).")
+    for key in ("local_llm_timeout_seconds", "local_llm_context_window", "local_llm_num_parallel", "local_llm_max_loaded_models"):
+        val = updates.get(key)
+        if val is not None and not (isinstance(val, int) and val > 0):
+            raise HTTPException(status_code=422, detail=f"{key} must be a positive integer.")
+    chunking = updates.get("chunking")
+    if isinstance(chunking, dict):
+        for key in ("chunk_size", "chunk_overlap"):
+            val = chunking.get(key)
+            if val is not None and not (isinstance(val, int) and val > 0):
+                raise HTTPException(status_code=422, detail=f"chunking.{key} must be a positive integer.")
+    retrieval = updates.get("retrieval")
+    if isinstance(retrieval, dict):
+        for key in ("dense_top_k", "lexical_top_k", "map_top_k", "fused_top_k", "rerank_top_k"):
+            val = retrieval.get(key)
+            if val is not None and not (isinstance(val, int) and val > 0):
+                raise HTTPException(status_code=422, detail=f"retrieval.{key} must be a positive integer.")
+    session = updates.get("session")
+    if isinstance(session, dict):
+        for key in ("idle_timeout_minutes", "soft_token_limit"):
+            val = session.get(key)
+            if val is not None and not (isinstance(val, int) and val > 0):
+                raise HTTPException(status_code=422, detail=f"session.{key} must be a positive integer.")
 
 
 def _find_free_port() -> int:

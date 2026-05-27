@@ -22,17 +22,14 @@ from arignan.llm.service import (
 )
 
 
-def test_provision_managed_runtime_downloads_windows_bundle(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("arignan.llm.service._is_windows_platform", lambda: True)
-    monkeypatch.setattr("arignan.llm.service.shutil.which", lambda name: None)
+def _make_fake_zip_stream(captured: dict, *, exe_name: str = "ollama.exe") -> object:
     archive_bytes = io.BytesIO()
-    captured: dict[str, object] = {}
-    import zipfile
+    import zipfile as _zipfile
 
-    with zipfile.ZipFile(archive_bytes, "w") as archive:
-        archive.writestr("ollama.exe", "binary")
+    with _zipfile.ZipFile(archive_bytes, "w") as archive:
+        archive.writestr(exe_name, "binary")
 
-    class FakeStream:
+    class FakeZipStream:
         def __enter__(self):
             return self
 
@@ -49,9 +46,42 @@ def test_provision_managed_runtime_downloads_windows_bundle(tmp_path: Path, monk
     def fake_stream(*args, **kwargs):
         captured["args"] = args
         captured["kwargs"] = kwargs
-        return FakeStream()
+        return FakeZipStream()
 
-    monkeypatch.setattr("arignan.llm.service.httpx.stream", fake_stream)
+    return fake_stream
+
+
+def _make_fake_binary_stream(captured: dict) -> object:
+    class FakeBinaryStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        @staticmethod
+        def raise_for_status() -> None:
+            return None
+
+        def iter_bytes(self):
+            yield b"binary"
+
+    def fake_stream(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeBinaryStream()
+
+    return fake_stream
+
+
+def test_provision_managed_runtime_downloads_windows_bundle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("arignan.llm.service._is_windows_platform", lambda: True)
+    monkeypatch.setattr("arignan.llm.service.platform.system", lambda: "Windows")
+    monkeypatch.setattr("arignan.llm.service.platform.machine", lambda: "AMD64")
+    monkeypatch.setattr("arignan.llm.service.shutil.which", lambda name: None)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("arignan.llm.service.httpx.stream", _make_fake_zip_stream(captured))
 
     executable = provision_managed_runtime(tmp_path)
 
@@ -59,6 +89,54 @@ def test_provision_managed_runtime_downloads_windows_bundle(tmp_path: Path, monk
     assert executable.exists()
     assert captured["args"] == ("GET", "https://ollama.com/download/ollama-windows-amd64.zip")
     assert captured["kwargs"]["follow_redirects"] is True
+
+
+def test_provision_managed_runtime_downloads_macos_bundle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("arignan.llm.service._is_windows_platform", lambda: False)
+    monkeypatch.setattr("arignan.llm.service.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("arignan.llm.service.platform.machine", lambda: "arm64")
+    monkeypatch.setattr("arignan.llm.service.shutil.which", lambda name: None)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("arignan.llm.service.httpx.stream", _make_fake_binary_stream(captured))
+
+    executable = provision_managed_runtime(tmp_path)
+
+    assert executable == bundled_ollama_executable(tmp_path)
+    assert executable.exists()
+    assert captured["args"] == ("GET", "https://ollama.com/download/ollama-darwin")
+    assert captured["kwargs"]["follow_redirects"] is True
+
+
+def test_provision_managed_runtime_downloads_linux_bundle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("arignan.llm.service._is_windows_platform", lambda: False)
+    monkeypatch.setattr("arignan.llm.service.platform.system", lambda: "Linux")
+    monkeypatch.setattr("arignan.llm.service.platform.machine", lambda: "x86_64")
+    monkeypatch.setattr("arignan.llm.service.shutil.which", lambda name: None)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("arignan.llm.service.httpx.stream", _make_fake_binary_stream(captured))
+
+    executable = provision_managed_runtime(tmp_path)
+
+    assert executable == bundled_ollama_executable(tmp_path)
+    assert executable.exists()
+    assert captured["args"] == ("GET", "https://ollama.com/download/ollama-linux-amd64")
+    assert captured["kwargs"]["follow_redirects"] is True
+
+
+def test_provision_managed_runtime_downloads_linux_arm64_bundle(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("arignan.llm.service._is_windows_platform", lambda: False)
+    monkeypatch.setattr("arignan.llm.service.platform.system", lambda: "Linux")
+    monkeypatch.setattr("arignan.llm.service.platform.machine", lambda: "aarch64")
+    monkeypatch.setattr("arignan.llm.service.shutil.which", lambda name: None)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("arignan.llm.service.httpx.stream", _make_fake_binary_stream(captured))
+
+    executable = provision_managed_runtime(tmp_path)
+
+    assert captured["args"] == ("GET", "https://ollama.com/download/ollama-linux-arm64")
 
 
 def test_provision_managed_runtime_prefers_existing_ollama_on_path(tmp_path: Path, monkeypatch) -> None:

@@ -151,3 +151,17 @@ def write_default_settings(
         json.dump(config.to_dict(), handle, indent=2)
         handle.write("\n")
     return resolved_settings
+
+
+def save_config(
+    updates: dict[str, Any],
+    app_home: Path | None = None,
+) -> AppConfig:
+    updates = {k: v for k, v in updates.items() if k != "app_home"}
+    cfg = load_config(app_home=app_home)
+    _merge_dataclass(cfg, updates)
+    resolved_settings = cfg.app_home / "settings.json"
+    with resolved_settings.open("w", encoding="utf-8") as handle:
+        json.dump(cfg.to_dict(), handle, indent=2)
+        handle.write("\n")
+    return cfg
